@@ -186,6 +186,10 @@ class FourOverSixLinear(nn.Linear):
                 ),
             )
 
+    @property
+    def high_precision_parameter_names(self) -> tuple[str, ...]:
+        return ("weight",)
+
     def get_quantized_parameters(self, weight: torch.Tensor) -> dict[str, Any]:
         weight_config = QuantizationConfig(
             backend=self.config.quantize_backend,
