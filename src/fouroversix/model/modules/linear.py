@@ -188,7 +188,7 @@ class FourOverSixLinear(nn.Linear):
 
     @property
     def parameters_to_quantize(self) -> tuple[str, ...]:
-        """Return the names of the high-precision parameters."""
+        """Return high precision parameters to be quantized and deleted."""
         return ("weight",)
 
     def get_quantized_parameters(
@@ -222,7 +222,8 @@ class FourOverSixLinear(nn.Linear):
                 ),
             }
 
-        raise ValueError(f"Unsupported high-preciison parameter: {parameter_name}")
+        msg = f"Unsupported high-preciison parameter: {parameter_name}"
+        raise ValueError(msg)
 
     def quantized_weight(self) -> QuantizedTensor:
         """
