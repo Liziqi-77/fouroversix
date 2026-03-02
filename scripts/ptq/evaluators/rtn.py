@@ -67,9 +67,10 @@ class RTNEvaluatorImpl(PTQEvaluator):
             )
 
             save_kwargs = {}
-            if hasattr(model_config,  "quantization_config"):
-                hf_quantization_config.pre_quantized_model_config_type = \
-                    str(type(model_config))
+            if hasattr(model_config, "quantization_config"):
+                hf_quantization_config.pre_quantized_model_config_type = str(
+                    type(model_config),
+                )
                 save_kwargs["save_original_format"] = False
                 delattr(model_config, "quantization_config")
 
