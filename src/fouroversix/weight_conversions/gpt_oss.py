@@ -67,6 +67,7 @@ class FourOverSixGptOssDeserialize(ConversionOps):
 
         return {f"{prefix}_proj": [dequantized_weight]}
 
+
 @WeightConversions.register(str(GptOssConfig))
 class GptOssWeightConverter:
     """Stores the weight conversions for the gpt oss model."""
@@ -78,17 +79,21 @@ class GptOssWeightConverter:
             WeightConverter(
                 source_patterns=[".gate_up_proj_blocks", ".gate_up_proj_scales"],
                 target_patterns=".gate_up_proj",
-                operations=[FourOverSixGptOssDeserialize(
-                    dtype=DataType.mxfp4,
-                    scale_rule=ScaleRule.static_6,
-                )],
+                operations=[
+                    FourOverSixGptOssDeserialize(
+                        dtype=DataType.mxfp4,
+                        scale_rule=ScaleRule.static_6,
+                    ),
+                ],
             ),
             WeightConverter(
                 source_patterns=[".down_proj_blocks", ".down_proj_scales"],
                 target_patterns=".down_proj",
-                operations=[FourOverSixGptOssDeserialize(
-                    dtype=DataType.mxfp4,
-                    scale_rule=ScaleRule.static_6,
-                )],
+                operations=[
+                    FourOverSixGptOssDeserialize(
+                        dtype=DataType.mxfp4,
+                        scale_rule=ScaleRule.static_6,
+                    ),
+                ],
             ),
         ]

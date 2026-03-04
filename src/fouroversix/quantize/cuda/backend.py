@@ -44,6 +44,7 @@ class CUDAQuantizeBackend(QuantizeBackendBase):
 
         return (
             x.device.type == "cuda"
+            and x.dtype in {torch.float16, torch.bfloat16}
             and config.round_style == RoundStyle.nearest
             and config.dtype == DataType.nvfp4
             and not config.transpose
