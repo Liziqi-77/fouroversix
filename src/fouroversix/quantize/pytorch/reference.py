@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import torch
 from fouroversix.quantize.utils import to_blocked
 from fouroversix.utils import DataType, RoundStyle, ScaleRule
@@ -8,6 +9,8 @@ E2M1_MAX_VALUE = 6
 E2M1_MAX_FOUR = 4
 E4M3_MAX_VALUE = 448
 E4M3_MAX_FOUROVERSIX = 256
+
+logger = logging.getLogger(__name__)
 
 
 def fake_quantize_to_e2m1(
@@ -132,6 +135,8 @@ def select_fouroversix_mxfp4(
     *,
     scale_rule: ScaleRule = ScaleRule.mse,
     round_style: RoundStyle = RoundStyle.nearest,
+    log_enabled: bool = False,
+    force_max_4: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     [NEW] 新增函数：MXFP4格式的FourOverSix自适应选择函数
@@ -146,6 +151,8 @@ def select_fouroversix_mxfp4(
         scales_4: 方案B的E8M0格式缩放因子
         scale_rule: 误差度量规则 (mse/mae/abs_max)
         round_style: 舍入方式
+        log_enabled: 是否启用日志记录
+        force_max_4: 是否强制使用max=4
     
     Returns:
         x_fake_quantized: 选择的伪量化结果
@@ -188,8 +195,32 @@ def select_fouroversix_mxfp4(
         x_error_4 = ((x_dequantized_4 - x_scale_blocks) ** 2).sum(axis=-1)
         x_error_6 = ((x_dequantized_6 - x_scale_blocks) ** 2).sum(axis=-1)
 
-    # 4. 选择误差更小的方案
-    select_4 = (x_error_4 < x_error_6).unsqueeze(1)
+    # [NEW] 日志记录：输出两种方案的误差统计
+    if log_enabled:
+        num_blocks = x_scale_blocks.shape[0]
+        select_4_count = (x_error_4 < x_error_6).sum().item()
+        select_6_count = num_blocks - select_4_count
+        
+        logger.info("=" * 60)
+        logger.info("[MXFP4 FourOverSix] 自适应选择统计:")
+        logger.info(f"  总块数: {num_blocks}")
+        logger.info(f"  选择 max=4 的块数: {select_4_count} ({select_4_count/num_blocks*100:.2f}%)")
+        logger.info(f"  选择 max=6 的块数: {select_6_count} ({select_6_count/num_blocks*100:.2f}%)")
+        logger.info(f"  误差度量规则: {scale_rule.value}")
+        logger.info(f"  max=4 误差统计: mean={x_error_4.mean().item():.6f}, "
+                   f"min={x_error_4.min().item():.6f}, max={x_error_4.max().item():.6f}")
+        logger.info(f"  max=6 误差统计: mean={x_error_6.mean().item():.6f}, "
+                   f"min={x_error_6.min().item():.6f}, max={x_error_6.max().item():.6f}")
+        logger.info(f"  强制使用 max=4: {force_max_4}")
+        logger.info("=" * 60)
+
+    # 4. 选择误差更小的方案（或强制使用max=4）
+    if force_max_4:
+        # [NEW] 强制使用max=4
+        select_4 = torch.ones(x_error_4.shape[0], dtype=torch.bool, device=x_error_4.device).unsqueeze(1)
+    else:
+        select_4 = (x_error_4 < x_error_6).unsqueeze(1)
+    
     x_fake_quantized = torch.where(
         select_4,
         x_fake_quantized_4.reshape(x_scale_blocks.shape[0], -1),
@@ -269,7 +300,28 @@ def select_fouroversix(
     *,
     scale_rule: ScaleRule = ScaleRule.mse,
     round_style: RoundStyle = RoundStyle.nearest,
+    log_enabled: bool = False,
+    force_max_4: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    NVFP4格式的FourOverSix自适应选择函数
+    
+    Args:
+        x_scale_blocks: 原始数据块 [num_blocks, 16]
+        x_block_scaled_6: 方案A(max=6)的缩放后数据
+        scales_6: 方案A的E4M3格式缩放因子
+        x_block_scaled_4: 方案B(max=4)的缩放后数据
+        scales_4: 方案B的E4M3格式缩放因子
+        x_amax: 全局最大值
+        scale_rule: 误差度量规则 (mse/mae/abs_max)
+        round_style: 舍入方式
+        log_enabled: 是否启用日志记录
+        force_max_4: 是否强制使用max=4
+    
+    Returns:
+        x_fake_quantized: 选择的伪量化结果
+        scales: 选择的缩放因子 (E4M3格式)
+    """
     x_fake_quantized_6 = fake_quantize_to_e2m1(
         x_block_scaled_6,
         round_style=round_style,
@@ -310,7 +362,33 @@ def select_fouroversix(
         x_error_4 = ((x_dequantized_4 - x_scale_blocks) ** 2).sum(axis=-1)
         x_error_6 = ((x_dequantized_6 - x_scale_blocks) ** 2).sum(axis=-1)
 
-    select_4 = (x_error_4 < x_error_6).unsqueeze(1)
+    # [NEW] 日志记录：输出两种方案的误差统计
+    if log_enabled:
+        num_blocks = x_scale_blocks.shape[0]
+        select_4_count = (x_error_4 < x_error_6).sum().item()
+        select_6_count = num_blocks - select_4_count
+        
+        logger.info("=" * 60)
+        logger.info("[NVFP4 FourOverSix] 自适应选择统计:")
+        logger.info(f"  总块数: {num_blocks}")
+        logger.info(f"  选择 max=4 的块数: {select_4_count} ({select_4_count/num_blocks*100:.2f}%)")
+        logger.info(f"  选择 max=6 的块数: {select_6_count} ({select_6_count/num_blocks*100:.2f}%)")
+        logger.info(f"  误差度量规则: {scale_rule.value}")
+        logger.info(f"  全局amax: {x_amax.item():.6f}")
+        logger.info(f"  max=4 误差统计: mean={x_error_4.mean().item():.6f}, "
+                   f"min={x_error_4.min().item():.6f}, max={x_error_4.max().item():.6f}")
+        logger.info(f"  max=6 误差统计: mean={x_error_6.mean().item():.6f}, "
+                   f"min={x_error_6.min().item():.6f}, max={x_error_6.max().item():.6f}")
+        logger.info(f"  强制使用 max=4: {force_max_4}")
+        logger.info("=" * 60)
+
+    # 选择误差更小的方案（或强制使用max=4）
+    if force_max_4:
+        # [NEW] 强制使用max=4
+        select_4 = torch.ones(x_error_4.shape[0], dtype=torch.bool, device=x_error_4.device).unsqueeze(1)
+    else:
+        select_4 = (x_error_4 < x_error_6).unsqueeze(1)
+    
     x_fake_quantized = torch.where(
         select_4,
         x_fake_quantized_4.reshape(x_scale_blocks.shape[0], -1),
@@ -332,6 +410,8 @@ def quantize_to_fp4(
     *,
     block_scale_2d: bool = False,
     fp4_format: DataType = DataType.nvfp4,
+    force_max_4: bool = False,  # [NEW] 强制使用max=4
+    log_fouroversix: bool = False,  # [NEW] 记录FourOverSix选择日志
     round_style: RoundStyle = RoundStyle.nearest,
     scale_rule: ScaleRule = ScaleRule.mse,
     transpose: bool = False,
@@ -339,6 +419,26 @@ def quantize_to_fp4(
     tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]
     | tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor]
 ):
+    """
+    主量化函数
+    
+    Args:
+        x: 输入张量 [M, N]
+        x_amax: 可选的全局最大值
+        had: 可选的Hadamard矩阵
+        block_scale_2d: 是否使用2D块缩放
+        fp4_format: 数据类型 (nvfp4/mxfp4)
+        force_max_4: [NEW] 强制使用max=4（仅对自适应规则有效）
+        log_fouroversix: [NEW] 记录FourOverSix选择日志
+        round_style: 舍入方式
+        scale_rule: 缩放规则
+        transpose: 是否转置
+    
+    Returns:
+        values: 量化后的值 (uint8)
+        scales: 缩放因子
+        amax: 全局最大值（MXFP4为None）
+    """
     if transpose:
         x = x.T
 
@@ -382,10 +482,7 @@ def quantize_to_fp4(
                 x_scale_blocks,
                 scale_rule=ScaleRule.static_6,  # 使用static_6计算基础缩放
             )
-            # 方案B: max=4，需要调整缩放因子
-            # 对于MXFP4，方案B的缩放因子需要乘以1.5 (与NVFP4类似)
-            # 但MXFP4使用E8M0格式，不能直接乘以1.5
-            # 解决方案：重新计算max=4的缩放因子
+            # 方案B: max=4
             x_block_scaled_4, scales_4 = quantize_to_mxfp4(
                 x_scale_blocks,
                 scale_rule=ScaleRule.static_4,  # 使用static_4计算基础缩放
@@ -399,6 +496,8 @@ def quantize_to_fp4(
                 scales_4,
                 scale_rule=scale_rule,
                 round_style=round_style,
+                log_enabled=log_fouroversix,  # [NEW] 传递日志参数
+                force_max_4=force_max_4,  # [NEW] 传递强制参数
             )
         else:
             # MXFP4静态量化 (static_6 或 static_4)
@@ -438,6 +537,8 @@ def quantize_to_fp4(
             x_amax,
             scale_rule=scale_rule,
             round_style=round_style,
+            log_enabled=log_fouroversix,  # [NEW] 传递日志参数
+            force_max_4=force_max_4,  # [NEW] 传递强制参数
         )
     else:
         msg = f"Invalid FP4 format: {fp4_format}"

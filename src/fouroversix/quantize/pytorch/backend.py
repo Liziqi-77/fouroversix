@@ -96,6 +96,8 @@ class PyTorchQuantizeBackend(QuantizeBackendBase):
                 x,
                 had=get_rht_matrix() if config.rht else None,
                 fp4_format=config.dtype,
+                force_max_4=config.force_max_4,  # [NEW] 传递强制参数
+                log_fouroversix=config.log_fouroversix,  # [NEW] 传递日志参数
                 round_style=config.round_style,
                 scale_rule=config.scale_rule,
                 block_scale_2d=config.block_scale_2d,

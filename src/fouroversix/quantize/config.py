@@ -17,6 +17,14 @@ class QuantizationConfig:
             weight matrix during training, so that W and W.T will be equivalent after
             quantization.
         dtype (DataType): The data type to quantize to.
+        force_max_4 (bool): [NEW] If True, force using max=4 for FourOverSix quantization
+            instead of adaptive selection. Only applicable when scale_rule is adaptive
+            (mse, mae, abs_max). Default is False.
+        log_fouroversix (bool): [NEW] If True, log the error comparison between max=4 and
+            max=6 during FourOverSix adaptive selection. Default is False.
+        rbits (int): Random bits to provide to the cvt.rs instruction when performing
+            stochastic rounding. Only supported with the Triton and CUDA backends. If
+            set to -1, random bits will be generated on the fly.
         rht (bool): If True, the random Hadamard transform will be applied to the input
             prior to quantization.
         round_style (RoundStyle): The rounding style to apply during quantization.
@@ -30,6 +38,9 @@ class QuantizationConfig:
     backend: QuantizeBackend | None = None
     block_scale_2d: bool = False
     dtype: DataType = DataType.nvfp4
+    force_max_4: bool = False  # [NEW] 强制使用max=4
+    log_fouroversix: bool = False  # [NEW] 记录FourOverSix选择日志
+    rbits: int = -1
     rht: bool = False
     round_style: RoundStyle = RoundStyle.nearest
     scale_rule: ScaleRule = ScaleRule.mse
