@@ -92,7 +92,12 @@ def quantize_to_mxfp4(
     *,
     scale_rule: ScaleRule = ScaleRule.mse,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    assert scale_rule in {ScaleRule.static_6, ScaleRule.static_4}
+    """
+    [MODIFIED] 修改MXFP4量化函数，移除只支持静态规则的断言
+    现在支持自适应缩放规则，但此函数仅用于静态规则
+    """
+    # [MODIFIED] 移除断言，允许自适应规则调用此函数
+    # assert scale_rule in {ScaleRule.static_6, ScaleRule.static_4}
 
     x_scales_hp = (
         x_scale_blocks.abs().max(axis=-1).values / scale_rule.max_allowed_e2m1_value()
@@ -116,6 +121,87 @@ def quantize_to_mxfp4(
     x_block_scaled = x_scale_blocks / x_scales_hp.unsqueeze(1)
 
     return x_block_scaled, x_scales.view(torch.float8_e8m0fnu)
+
+
+def select_fouroversix_mxfp4(
+    x_scale_blocks: torch.Tensor,
+    x_block_scaled_6: torch.Tensor,
+    scales_6: torch.Tensor,
+    x_block_scaled_4: torch.Tensor,
+    scales_4: torch.Tensor,
+    *,
+    scale_rule: ScaleRule = ScaleRule.mse,
+    round_style: RoundStyle = RoundStyle.nearest,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    [NEW] 新增函数：MXFP4格式的FourOverSix自适应选择函数
+    
+    与NVFP4的select_fouroversix函数类似，但针对MXFP4的E8M0缩放因子格式进行调整
+    
+    Args:
+        x_scale_blocks: 原始数据块 [num_blocks, 32]
+        x_block_scaled_6: 方案A(max=6)的缩放后数据
+        scales_6: 方案A的E8M0格式缩放因子
+        x_block_scaled_4: 方案B(max=4)的缩放后数据
+        scales_4: 方案B的E8M0格式缩放因子
+        scale_rule: 误差度量规则 (mse/mae/abs_max)
+        round_style: 舍入方式
+    
+    Returns:
+        x_fake_quantized: 选择的伪量化结果
+        scales: 选择的缩放因子 (E8M0格式)
+    """
+    # 1. 对两种方案进行伪量化
+    x_fake_quantized_6 = fake_quantize_to_e2m1(
+        x_block_scaled_6,
+        round_style=round_style,
+    )
+    x_fake_quantized_4 = fake_quantize_to_e2m1(
+        x_block_scaled_4,
+        round_style=round_style,
+    )
+
+    # 2. 反量化以计算误差
+    # MXFP4使用E8M0格式缩放因子，需要将其转换回float32
+    scales_6_hp = (scales_6.view(torch.uint8).to(torch.int32) << 23).view(torch.float32)
+    scales_4_hp = (scales_4.view(torch.uint8).to(torch.int32) << 23).view(torch.float32)
+    
+    # 反量化公式: x_dequantized = x_e2m1 * scale_e8m0
+    # 注意：MXFP4没有全局amax，直接使用E8M0缩放因子
+    x_dequantized_6 = (
+        x_fake_quantized_6.to(torch.float32)
+        * scales_6_hp.unsqueeze(1)
+    )
+    x_dequantized_4 = (
+        x_fake_quantized_4.to(torch.float32)
+        * scales_4_hp.unsqueeze(1)
+    )
+
+    # 3. 计算量化误差
+    if scale_rule == ScaleRule.abs_max:
+        x_error_4 = (x_dequantized_4 - x_scale_blocks).abs().max(axis=-1).values
+        x_error_6 = (x_dequantized_6 - x_scale_blocks).abs().max(axis=-1).values
+    elif scale_rule == ScaleRule.mae:
+        x_error_4 = (x_dequantized_4 - x_scale_blocks).abs().sum(axis=-1)
+        x_error_6 = (x_dequantized_6 - x_scale_blocks).abs().sum(axis=-1)
+    elif scale_rule == ScaleRule.mse:
+        x_error_4 = ((x_dequantized_4 - x_scale_blocks) ** 2).sum(axis=-1)
+        x_error_6 = ((x_dequantized_6 - x_scale_blocks) ** 2).sum(axis=-1)
+
+    # 4. 选择误差更小的方案
+    select_4 = (x_error_4 < x_error_6).unsqueeze(1)
+    x_fake_quantized = torch.where(
+        select_4,
+        x_fake_quantized_4.reshape(x_scale_blocks.shape[0], -1),
+        x_fake_quantized_6.reshape(x_scale_blocks.shape[0], -1),
+    )
+    scales = torch.where(
+        select_4,
+        scales_4.reshape(-1, 1),
+        scales_6.reshape(-1, 1),
+    )
+
+    return x_fake_quantized, scales
 
 
 def quantize_to_nvfp4(
@@ -286,21 +372,52 @@ def quantize_to_fp4(
 
     x_fake_quantized = None
 
+    # [MODIFIED] 重构量化分支逻辑，支持MXFP4的自适应量化
     if fp4_format == DataType.mxfp4:
-        x_block_scaled, scales = quantize_to_mxfp4(
-            x_scale_blocks,
-            scale_rule=scale_rule,
-        )
+        # MXFP4量化分支
+        if scale_rule.is_adaptive():
+            # [NEW] MXFP4自适应量化 (FourOverSix for MXFP4)
+            # 方案A: max=6
+            x_block_scaled_6, scales_6 = quantize_to_mxfp4(
+                x_scale_blocks,
+                scale_rule=ScaleRule.static_6,  # 使用static_6计算基础缩放
+            )
+            # 方案B: max=4，需要调整缩放因子
+            # 对于MXFP4，方案B的缩放因子需要乘以1.5 (与NVFP4类似)
+            # 但MXFP4使用E8M0格式，不能直接乘以1.5
+            # 解决方案：重新计算max=4的缩放因子
+            x_block_scaled_4, scales_4 = quantize_to_mxfp4(
+                x_scale_blocks,
+                scale_rule=ScaleRule.static_4,  # 使用static_4计算基础缩放
+            )
+            # 调用MXFP4的自适应选择函数
+            x_fake_quantized, scales = select_fouroversix_mxfp4(
+                x_scale_blocks,
+                x_block_scaled_6,
+                scales_6,
+                x_block_scaled_4,
+                scales_4,
+                scale_rule=scale_rule,
+                round_style=round_style,
+            )
+        else:
+            # MXFP4静态量化 (static_6 或 static_4)
+            x_block_scaled, scales = quantize_to_mxfp4(
+                x_scale_blocks,
+                scale_rule=scale_rule,
+            )
     elif fp4_format == DataType.nvfp4 and scale_rule in {
         ScaleRule.static_6,
         ScaleRule.static_4,
     }:
+        # NVFP4静态量化
         x_block_scaled, scales = quantize_to_nvfp4(
             x_scale_blocks,
             x_amax,
             scale_rule=scale_rule,
         )
-    elif fp4_format == DataType.nvfp4:  # Four over six
+    elif fp4_format == DataType.nvfp4:  # Four over six for NVFP4
+        # NVFP4自适应量化
         x_block_scaled_6, scales_6 = quantize_to_nvfp4(
             x_scale_blocks,
             x_amax,

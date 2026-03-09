@@ -34,15 +34,18 @@ class QuantizeBackendBase(ABC):
         if config.dtype not in {DataType.mxfp4, DataType.nvfp4}:
             return False
 
-        if config.dtype == DataType.mxfp4 and config.scale_rule not in {
-            ScaleRule.static_6,
-            ScaleRule.static_4,
-        }:
-            msg = (
-                "MXFP4 quantization only supports the `static_6` and `static_4` scale "
-                "rules"
-            )
-            raise ValueError(msg)
+        # [MODIFIED] 移除MXFP4只支持静态规则的限制
+        # MXFP4现在支持自适应缩放规则(mse, mae, abs_max)以实现FourOverSix算法
+        # 原代码:
+        # if config.dtype == DataType.mxfp4 and config.scale_rule not in {
+        #     ScaleRule.static_6,
+        #     ScaleRule.static_4,
+        # }:
+        #     msg = (
+        #         "MXFP4 quantization only supports the `static_6` and `static_4` scale "
+        #         "rules"
+        #     )
+        #     raise ValueError(msg)
 
         return True
 

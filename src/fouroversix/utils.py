@@ -92,12 +92,12 @@ class RoundStyle(str, Enum):
 
 class ScaleRule(str, Enum):
     """
-    Block scale selection rules for NVFP4 quantization.
+    Block scale selection rules for NVFP4 and MXFP4 quantization.
 
     - `abs_max`: Between 4 and 6, select the block scale that minimizes the maximum
         absolute quantization error.
     - `static_4`: Select 4 for all blocks.
-    - `static_6`: Select 6 for all blocks (normal NVFP4 quantization).
+    - `static_6`: Select 6 for all blocks (normal NVFP4/MXFP4 quantization).
     - `mae`: Between 4 and 6, select the block scale that minimizes the mean absolute
         quantization error.
     - `mse`: Between 4 and 6, select the block scale that minimizes the mean squared
@@ -130,5 +130,14 @@ class ScaleRule(str, Enum):
         return 4 if self == ScaleRule.static_4 else 6
 
     def max_allowed_e4m3_value(self) -> int:
-        """Return the maximum allowed E4M3 value for the rule."""
+        """Return the maximum allowed E4M3 value for the rule (NVFP4 only)."""
         return 448 if self in {ScaleRule.static_6, ScaleRule.static_4} else 256
+
+    def is_adaptive(self) -> bool:
+        """Return True if the rule is adaptive (4/6 selection), False otherwise.
+        
+        [MODIFIED] 新增方法：判断是否为自适应缩放规则
+        自适应规则包括: mse, mae, abs_max
+        静态规则包括: static_6, static_4
+        """
+        return self in {ScaleRule.mse, ScaleRule.mae, ScaleRule.abs_max}
